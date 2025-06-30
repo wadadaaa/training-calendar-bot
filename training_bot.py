@@ -161,7 +161,7 @@ def parse_training_message(text: str) -> List[Training]:
             after_time = line[line.find(time) + len(time):]
             # Remove everything after the period to get clean location
             location_part = after_time.split('.')[0] if '.' in after_time else after_time
-            location_match = re.search(r',\s*(.+?)
+            location_match = re.search(r',\s*(.+?)$', location_part)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
