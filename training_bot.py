@@ -160,8 +160,9 @@ def parse_training_message(text: str) -> List[Training]:
             # Check for combined training first (both swimming and running keywords)
             if ("плаван" in line_lower or "море" in line_lower) and "бег" in line_lower:
                 workout_type = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
-            # Check if line has both running and swimming emojis
-            elif ("🏃" in line and "🏊" in line) or ("🏃‍♂" in line and "🏊" in line):
+            # Check if line has both running and swimming emojis (handle complex emoji combinations)
+            elif (("🏃" in line or "🏃‍♂" in line or "🏃‍♀" in line) and 
+                  ("🏊" in line or "🏊‍♂" in line or "🏊‍♀" in line or "🏊🏻‍♂️" in line)):
                 workout_type = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
             elif "плаван" in line_lower or "🏊" in line or "🛟" in line:
                 workout_type = {"emoji": "🏊", "name": "Swimming", "name_ru": "Плавание"}
