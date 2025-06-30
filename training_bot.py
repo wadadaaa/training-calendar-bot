@@ -5,7 +5,12 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from typing import List
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -182,13 +187,11 @@ def parse_training_message(text: str) -> List[Training]:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Main menu keyboard
     menu = ReplyKeyboardMarkup(
         [["/example", "/help"]],
         resize_keyboard=True,
         one_time_keyboard=False,
     )
-
     welcome = (
         "🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n"
         "Привет! Я помогу перенести расписание из WhatsApp в твой календарь.\n\n"
@@ -201,7 +204,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         welcome, parse_mode="Markdown", reply_markup=menu
     )
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         "*Как пользоваться:*\n"
@@ -212,7 +214,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
-
 async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     example = (
         "*Пример:*\n"
@@ -222,24 +223,5 @@ async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     await update.message.reply_text(example, parse_mode="Markdown")
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text or ""
-    trainings = parse_training_message(text)
-
-    if not trainings:
-        return await update.message.reply_text(
-            "❌ Не нашёл тренировок. Отправь /example для формата."
-        )
-
-    context.user_data["trainings"] = trainings
-
-    kb = []
-    for idx, t in enumerate(trainings):
-        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date = t.date.strftime("%d.%m")
-        mark = "✅" if t.selected else "⬜"
-        kb.append([
-            InlineKeyboardButton(
-                f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
-                callback_data=f"toggle_
+    text = update.message
