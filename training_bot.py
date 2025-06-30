@@ -106,10 +106,46 @@ async def notify_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await start_cmd(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # your message handler logic: parse, show inline selection etc.
-    pass
+    text = update.message.text or ""
+    text_clean = text.strip().lower()
+    # Support inline start alias
+    if text_clean in ("start", "старт"):
+        return await start_cmd(update, context)
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    trainings = parse_training_message(text)
+    if not trainings:
+        return await update.message.reply_text(
+            "❌ Не нашёл тренировок. Попробуй отправить /example."
+        )
+    context.user_data["trainings"] = trainings
+
+    kb = []
+    for idx, t in enumerate(trainings):
+        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
+        date_str = t.date.strftime("%d %B")
+        # Russian month names
+        for en, ru in {
+            "January": "января", "February": "февраля", "March": "марта", "April": "апреля",
+            "May": "мая", "June": "июня", "July": "июля", "August": "августа",
+            "September": "сентября", "October": "октября", "November": "ноября", "December": "декабря"
+        }.items():
+            date_str = date_str.replace(en, ru)
+        label = f"{t.workout_type['emoji']} {day_ru}, {date_str} — {t.time}"
+        mark = "✅" if t.selected else "⬜"
+        kb.append([InlineKeyboardButton(f"{mark} {label}", callback_data=f"toggle_{idx}")])
+    kb.append([
+        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
+        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
+    ])
+    kb.append([InlineKeyboardButton("📥 Скачать", callback_data="choose_calendar")])
+
+    await update.message.reply_text(
+        f"Нашёл *{len(trainings)}* тренировок. Выбери:",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = update.callback_query.data
     if data == "start":
         await notify_start(update, context)
