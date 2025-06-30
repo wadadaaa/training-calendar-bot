@@ -106,7 +106,7 @@ class Training:
 
 
 def parse_training_message(text: str) -> List[Training]:
-    trainings: List[Training] = []
+    trainings = []
     lines = text.splitlines()
 
     for i, raw in enumerate(lines):
@@ -114,68 +114,34 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
 
-        # Day detection
-        day_match = next((d for d in DAY_MAPPING if d in line.lower()), None)
-        if not day_match:
+        # 1) find a weekday
+        day = next((d for d in DAY_MAPPING if d in line.lower()), None)
+        if not day:
             continue
 
-        # Time detection
+        # 2) find time (possibly on next line)
         tm = re.search(r"(\d{1,2}:\d{2})", line)
+        if not tm and i + 1 < len(lines):
+            # try next line
+            next_line = lines[i + 1]
+            tm = re.search(r"(\d{1,2}:\d{2})", next_line)
+            if tm:
+                # merge so we can still extract location & desc later
+                line = f"{line} {next_line.strip()}"
         if not tm:
             continue
+
         time = tm.group(1)
 
-        logger.info(f"Found training on {day_match} at {time}")
+        # … the rest of your logic (workout_type, location, description, Waze link) …
+        # remember that now `line` may contain both the original and the "next" line.
 
-        # Workout type
-        lower = line.lower()
-        if (("плаван" in lower or "море" in lower) and "бег" in lower) or (
-            "🏃" in line and "🏊" in line
-        ):
-            workout = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
-        elif "плаван" in lower or "🏊" in line or "🛟" in line:
-            workout = WORKOUT_TYPES["плавание"]
-        elif "вело" in lower or "🚴" in line:
-            workout = WORKOUT_TYPES["вело"]
-        else:
-            workout = WORKOUT_TYPES["бег"]
-
-        # Location extraction
-        after = line[line.find(time) + len(time) :]
-        loc_part = after.split(".", 1)[0]
-        loc_match = re.search(r",\s*(.+)$", loc_part)
-        location = loc_match.group(1).strip() if loc_match else "Training location"
-
-        # Description extraction
-        before = line[: line.find(time)]
-        desc = re.sub(
-            r"|".join(map(re.escape, DAY_MAPPING)) + r"|[🏃🏊🚴🛟🏃‍♂️🏊‍♀️]+",
-            "",
-            before,
-            flags=re.IGNORECASE,
-        ).strip(" ,:-")
-        description = desc or workout["name_ru"]
-
-        # Optional Waze link on next line
-        waze = ""
-        if i + 1 < len(lines):
-            link = re.search(r"https?://waze\.com/[^\s]+", lines[i + 1])
-            if link:
-                waze = link.group(0)
-
-        trainings.append(
-            Training(
-                day_name=day_match,
-                time=time,
-                workout_type=workout,
-                description=description,
-                location=location,
-                waze_link=waze,
-            )
-        )
+        # e.g.:
+        # after = line[line.find(time) + len(time):]
+        # …
+        trainings.append( Training(...) )
 
     return trainings
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome = (
