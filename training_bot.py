@@ -399,7 +399,7 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main(), location_part)
+    main()
             location = location_match.group(1).strip() if location_match else 'Training location'
             
             # Extract description - everything between day/workout type and time
