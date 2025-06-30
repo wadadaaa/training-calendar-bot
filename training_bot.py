@@ -64,17 +64,20 @@ class Training:
         self.date = self._calculate_date()
 
     def _calculate_date(self) -> datetime:
+        """Calculate next occurrence of the given weekday."""
         today = datetime.now()
-        current_weekday = today.weekday()  # Monday=0
+        current_weekday = today.weekday()  # Monday=0 ... Sunday=6
 
         info = DAY_MAPPING[self.day_name.lower()]
         target = info["num"]
-        target = 6 if target == 0 else target - 1  # convert Sunday=0→6
+        # Convert Sunday=0 to Python's Sunday=6
+        target = 6 if target == 0 else target - 1
 
         days_ahead = (target - current_weekday) % 7 or 7
         return today + timedelta(days=days_ahead)
 
     def to_ics(self) -> str:
+        """Render this training as an ICS event."""
         start_dt = self.date.replace(
             hour=int(self.time.split(":")[0]),
             minute=int(self.time.split(":")[1]),
@@ -106,7 +109,7 @@ class Training:
 
 
 def parse_training_message(text: str) -> List[Training]:
-    trainings = []
+    trainings: List[Training] = []
     lines = text.splitlines()
 
     for i, raw in enumerate(lines):
@@ -114,34 +117,73 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
 
-        # 1) find a weekday
+        # 1) Find a weekday
         day = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day:
             continue
 
-        # 2) find time (possibly on next line)
+        # 2) Find a time in this line or the next
         tm = re.search(r"(\d{1,2}:\d{2})", line)
         if not tm and i + 1 < len(lines):
-            # try next line
-            next_line = lines[i + 1]
-            tm = re.search(r"(\d{1,2}:\d{2})", next_line)
+            tm = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
             if tm:
-                # merge so we can still extract location & desc later
-                line = f"{line} {next_line.strip()}"
+                # Merge next line for unified parsing
+                line = f"{line} {lines[i + 1].strip()}"
         if not tm:
             continue
 
         time = tm.group(1)
 
-        # … the rest of your logic (workout_type, location, description, Waze link) …
-        # remember that now `line` may contain both the original and the "next" line.
+        # 3) Determine workout type
+        lower = line.lower()
+        if (("плаван" in lower or "море" in lower) and "бег" in lower) or (
+            "🏃" in line and "🏊" in line
+        ):
+            workout = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
+        elif "плаван" in lower or "🏊" in line or "🛟" in line:
+            workout = WORKOUT_TYPES["плавание"]
+        elif "вело" in lower or "🚴" in line:
+            workout = WORKOUT_TYPES["вело"]
+        else:
+            workout = WORKOUT_TYPES["бег"]
 
-        # e.g.:
-        # after = line[line.find(time) + len(time):]
-        # …
-        trainings.append( Training(...) )
+        # 4) Extract location (after time, up to a period)
+        after = line[line.find(time) + len(time):]
+        loc_part = after.split(".", 1)[0]
+        m_loc = re.search(r",\s*(.+)$", loc_part)
+        location = m_loc.group(1).strip() if m_loc else "Training location"
+
+        # 5) Extract description (before time, strip day names and emojis)
+        before = line[: line.find(time)]
+        desc = re.sub(
+            r"|".join(map(re.escape, DAY_MAPPING)) + r"|[🏃🏊🚴🛟🏃‍♂️🏊‍♀️]+",
+            "",
+            before,
+            flags=re.IGNORECASE,
+        ).strip(" ,:-")
+        description = desc or workout["name_ru"]
+
+        # 6) Look for a Waze link on the next line
+        waze = ""
+        if i + 1 < len(lines):
+            m_waze = re.search(r"https?://waze\.com/[^\s]+", lines[i + 1])
+            if m_waze:
+                waze = m_waze.group(0)
+
+        # 7) Append Training instance
+        trainings.append(
+            Training(
+                day_name=day,
+                time=time,
+                workout_type=workout,
+                description=description,
+                location=location,
+                waze_link=waze,
+            )
+        )
 
     return trainings
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome = (
@@ -167,7 +209,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Avoid triple-quoted string issues by concatenating
     example = (
         "*Пример:*\n"
         "🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n"
@@ -193,21 +234,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
         date = t.date.strftime("%d.%m")
         mark = "✅" if t.selected else "⬜"
-        kb.append(
-            [
-                InlineKeyboardButton(
-                    f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
-                    callback_data=f"toggle_{idx}",
-                )
-            ]
-        )
+        kb.append([
+            InlineKeyboardButton(
+                f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
+                callback_data=f"toggle_{idx}"
+            )
+        ])
 
-    kb.append(
-        [
-            InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
-            InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
-        ]
-    )
+    kb.append([
+        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
+        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
+    ])
     kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
 
     await update.message.reply_text(
@@ -282,26 +319,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "✅ Готово! Открой .ics файлы, чтобы добавить в календарь."
         )
 
-    # Rebuild keyboard after any toggle
+    # Rebuild the keyboard after any toggle
     kb = []
     for idx, t in enumerate(trainings):
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
         date = t.date.strftime("%d.%m")
         mark = "✅" if t.selected else "⬜"
-        kb.append(
-            [
-                InlineKeyboardButton(
-                    f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
-                    callback_data=f"toggle_{idx}",
-                )
-            ]
-        )
-    kb.append(
-        [
-            InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
-            InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
-        ]
-    )
+        kb.append([
+            InlineKeyboardButton(
+                f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
+                callback_data=f"toggle_{idx}"
+            )
+        ])
+    kb.append([
+        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
+        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
+    ])
     kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
 
     await query.edit_message_text(
