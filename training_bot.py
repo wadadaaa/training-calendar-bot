@@ -120,45 +120,53 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
         
-        # Look for lines with workout emojis (including emoji combinations)
-        if any(emoji in line for emoji in ['🏃', '🏊', '🚴', '🛟']) or ('🏃' in line and '🏊' in line):
-            # Extract day
-            day_match = None
-            for day in DAY_MAPPING.keys():
-                if day in line.lower():
-                    day_match = day
-                    break
-            
-            if not day_match:
-                continue
-            
-            # Extract time
+        # Look for lines that contain a day of the week AND a time
+        day_match = None
+        for day in DAY_MAPPING.keys():
+            if day in line.lower():
+                day_match = day
+                break
+        
+        # If we found a day, look for a time
+        if day_match:
             time_match = re.search(r'(\d{1,2}:\d{2})', line)
             if not time_match:
                 continue
             
             time = time_match.group(1)
             
-            # Determine workout type
+            # Determine workout type based on text content, not emojis
             workout_type = {'emoji': '🏃', 'name': 'Training', 'name_ru': 'Тренировка'}
             
-            # Check for combined training (running + swimming)
-            if '🏃' in line and '🏊' in line:
+            # Check text content for workout type
+            line_lower = line.lower()
+            if ('плавани' in line_lower and 'бег' in line_lower) or ('🏃' in line and '🏊' in line):
                 workout_type = {'emoji': '🏃🏊', 'name': 'Run+Swim', 'name_ru': 'Бег+Плавание'}
-            else:
-                for key, value in WORKOUT_TYPES.items():
-                    if key in line.lower():
-                        workout_type = value
-                        break
+            elif 'плавани' in line_lower:
+                workout_type = {'emoji': '🏊', 'name': 'Swimming', 'name_ru': 'Плавание'}
+            elif 'вело' in line_lower:
+                workout_type = {'emoji': '🚴', 'name': 'Cycling', 'name_ru': 'Велосипед'}
+            elif 'бег' in line_lower:
+                workout_type = {'emoji': '🏃', 'name': 'Running', 'name_ru': 'Бег'}
             
             # Extract location (after time)
             after_time = line[line.find(time) + len(time):]
             location_match = re.search(r',\s*([^.]+?)(?:\.|$)', after_time)
             location = location_match.group(1).strip() if location_match else 'Training location'
             
-            # Extract description
-            desc_match = re.search(r'[,:]\s*([^,]+?)(?:,\s*\d{1,2}:\d{2}|$)', line)
-            description = desc_match.group(1).strip() if desc_match else workout_type['name']
+            # Extract description (between day and time, or after workout type)
+            # Try to find text between comma/colon and time
+            desc_pattern = r'[,:]\s*([^,]+?)(?:,\s*\d{1,2}:\d{2}|$)'
+            desc_match = re.search(desc_pattern, line)
+            
+            if desc_match:
+                description = desc_match.group(1).strip()
+                # Clean up description
+                for day in DAY_MAPPING.keys():
+                    description = description.replace(day, '').strip()
+                description = description.strip(',: ')
+            else:
+                description = workout_type['name_ru']
             
             # Look for Waze link in the next line
             waze_link = ''
