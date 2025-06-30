@@ -4,8 +4,14 @@ import logging
 from datetime import datetime, timedelta
 from io import BytesIO
 from typing import List
+import urllib.parse
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -43,7 +49,6 @@ DAY_MAPPING = {
     "воскресенье":  {"num": 0, "name": "Sunday",    "name_ru": "Воскресенье"},
 }
 
-
 class Training:
     def __init__(
         self,
@@ -64,33 +69,26 @@ class Training:
         self.date = self._calculate_date()
 
     def _calculate_date(self) -> datetime:
-        """Calculate next occurrence of the given weekday."""
         today = datetime.now()
         current_weekday = today.weekday()  # Monday=0 ... Sunday=6
-
         info = DAY_MAPPING[self.day_name.lower()]
         target = info["num"]
-        # Convert Sunday=0 to Python's Sunday=6
         target = 6 if target == 0 else target - 1
-
         days_ahead = (target - current_weekday) % 7 or 7
         return today + timedelta(days=days_ahead)
 
     def to_ics(self) -> str:
-        """Render this training as an ICS event."""
         start_dt = self.date.replace(
             hour=int(self.time.split(":")[0]),
             minute=int(self.time.split(":")[1]),
             second=0,
         )
         end_dt = start_dt + timedelta(hours=1, minutes=30)
-
         start_str = start_dt.strftime("%Y%m%dT%H%M%S")
         end_str = end_dt.strftime("%Y%m%dT%H%M%S")
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         uid = f"training-{start_str}-{self.workout_type['name']}@telegram-bot"
         desc = f"Waze: {self.waze_link}" if self.waze_link else ""
-
         return (
             "BEGIN:VCALENDAR\n"
             "VERSION:2.0\n"
@@ -107,34 +105,24 @@ class Training:
             "END:VCALENDAR"
         )
 
-
 def parse_training_message(text: str) -> List[Training]:
     trainings: List[Training] = []
     lines = text.splitlines()
-
     for i, raw in enumerate(lines):
         line = raw.strip()
         if not line:
             continue
-
-        # 1) Find a weekday
         day = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day:
             continue
-
-        # 2) Find a time in this line or the next
         tm = re.search(r"(\d{1,2}:\d{2})", line)
         if not tm and i + 1 < len(lines):
-            tm = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
+            tm = re.search(r"(\d{1,2}:\d{2})", lines[i+1])
             if tm:
-                # Merge next line for unified parsing
-                line = f"{line} {lines[i + 1].strip()}"
+                line = f"{line} {lines[i+1].strip()}"
         if not tm:
             continue
-
         time = tm.group(1)
-
-        # 3) Determine workout type
         lower = line.lower()
         if (("плаван" in lower or "море" in lower) and "бег" in lower) or (
             "🏃" in line and "🏊" in line
@@ -146,215 +134,163 @@ def parse_training_message(text: str) -> List[Training]:
             workout = WORKOUT_TYPES["вело"]
         else:
             workout = WORKOUT_TYPES["бег"]
-
-        # 4) Extract location (after time, up to a period)
-        after = line[line.find(time) + len(time):]
-        loc_part = after.split(".", 1)[0]
-        m_loc = re.search(r",\s*(.+)$", loc_part)
+        after = line[line.find(time)+len(time):]
+        loc = after.split('.',1)[0]
+        m_loc = re.search(r",\s*(.+)$", loc)
         location = m_loc.group(1).strip() if m_loc else "Training location"
-
-        # 5) Extract description (before time, strip day names and emojis)
-        before = line[: line.find(time)]
+        before = line[:line.find(time)]
         desc = re.sub(
             r"|".join(map(re.escape, DAY_MAPPING)) + r"|[🏃🏊🚴🛟🏃‍♂️🏊‍♀️]+",
             "",
             before,
             flags=re.IGNORECASE,
-        ).strip(" ,:-")
-        description = desc or workout["name_ru"]
-
-        # 6) Look for a Waze link on the next line
-        waze = ""
+        ).strip(' ,:-')
+        description = desc or workout['name_ru']
+        waze = ''
         if i + 1 < len(lines):
-            m_waze = re.search(r"https?://waze\.com/[^\s]+", lines[i + 1])
+            m_waze = re.search(r"https?://waze\.com/[^\s]+", lines[i+1])
             if m_waze:
                 waze = m_waze.group(0)
-
-        # 7) Append Training instance
-        trainings.append(
-            Training(
-                day_name=day,
-                time=time,
-                workout_type=workout,
-                description=description,
-                location=location,
-                waze_link=waze,
-            )
-        )
-
+        trainings.append(Training(day, time, workout, description, location, waze))
     return trainings
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome = (
-        "🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n"
-        "Привет! Я помогу перенести расписание из WhatsApp в твой календарь.\n\n"
-        "*Команды:*\n"
-        "/start — это сообщение\n"
-        "/help  — помощь\n"
-        "/example — пример формата\n"
+    menu = ReplyKeyboardMarkup(
+        [['/example', '/help']],
+        resize_keyboard=True
     )
-    await update.message.reply_text(welcome, parse_mode="Markdown")
-
+    welcome = (
+        '🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n'
+        'Привет! Я помогу перенести расписание из WhatsApp в твой календарь.\n'
+        'Выбери команду из меню ниже.\n'
+    )
+    await update.message.reply_text(welcome, parse_mode='Markdown', reply_markup=menu)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
-        "*Как пользоваться:*\n"
-        "1. Скопируй расписание из WhatsApp\n"
-        "2. Отправь его мне\n"
-        "3. Выбери тренировки\n"
-        "4. Получи .ics файлы и добавь в календарь\n"
+        '*Как пользоваться:*\n'
+        '1. Скопируй расписание из WhatsApp\n'
+        '2. Отправь его мне\n'
+        '3. Выбери тренировки\n'
+        '4. Выбери календарь (Apple/Google)\n'
+        '5. Получи .ics или ссылку и добавь в календарь\n'
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     example = (
-        "*Пример:*\n"
-        "🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n"
-        "Точка сбора https://waze.com/ul/...\n"
-        "🏊 Понедельник, плавание, 19:50, Рамат-Ган.\n"
+        '*Пример:*\n'
+        '🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n'
+        'Точка сбора https://waze.com/ul/...\n'
+        '🏊 Понедельник, плавание, 19:50, Рамат-Ган.\n'
     )
-    await update.message.reply_text(example, parse_mode="Markdown")
-
+    await update.message.reply_text(example, parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text or ""
+    text = update.message.text or ''
     trainings = parse_training_message(text)
-
     if not trainings:
         return await update.message.reply_text(
-            "❌ Не нашёл тренировок. Отправь /example для формата."
+            '❌ Не нашёл тренировок. Отправь /example.'
         )
-
-    context.user_data["trainings"] = trainings
-
+    context.user_data['trainings'] = trainings
     kb = []
-    for idx, t in enumerate(trainings):
-        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date = t.date.strftime("%d.%m")
-        mark = "✅" if t.selected else "⬜"
+    for i, t in enumerate(trainings):
+        day_ru = DAY_MAPPING[t.day_name]['name_ru']
+        date = t.date.strftime('%d.%m')
+        mark = '✅' if t.selected else '⬜'
         kb.append([
             InlineKeyboardButton(
                 f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
-                callback_data=f"toggle_{idx}"
+                callback_data=f"toggle_{i}"
             )
         ])
-
     kb.append([
-        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
-        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
+        InlineKeyboardButton('✅ Выбрать всё', callback_data='select_all'),
+        InlineKeyboardButton('❌ Убрать всё', callback_data='deselect_all'),
     ])
-    kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
-
+    kb.append([InlineKeyboardButton('📥 Скачать', callback_data='choose_calendar')])
     await update.message.reply_text(
         f"Нашёл *{len(trainings)}* тренировок. Выбери:",
         reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown",
+        parse_mode='Markdown'
     )
-
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-
-    trainings: List[Training] = context.user_data.get("trainings", [])
-    if not trainings:
+    data = query.data
+    trainings: List[Training] = context.user_data.get('trainings', [])
+    if data.startswith('toggle_'):
+        idx = int(data.split('_')[1]); trainings[idx].selected = not trainings[idx].selected
+    elif data == 'select_all':
+        for t in trainings: t.selected = True
+    elif data == 'deselect_all':
+        for t in trainings: t.selected = False
+    elif data == 'choose_calendar':
+        # ask user to choose Apple or Google
+        kb = [
+            [InlineKeyboardButton('🍎 Apple Calendar', callback_data='download_apple')],
+            [InlineKeyboardButton('🔗 Google Calendar', callback_data='download_google')]
+        ]
         return await query.edit_message_text(
-            "Сессия истекла, отправь расписание заново."
+            'Выбери календарь для экспорта:',
+            reply_markup=InlineKeyboardMarkup(kb)
         )
-
-    cmd = query.data
-    if cmd.startswith("toggle_"):
-        idx = int(cmd.split("_")[1])
-        trainings[idx].selected = not trainings[idx].selected
-    elif cmd == "select_all":
-        for t in trainings:
-            t.selected = True
-    elif cmd == "deselect_all":
-        for t in trainings:
-            t.selected = False
-    elif cmd == "download":
-        chosen = [t for t in trainings if t.selected]
-        if not chosen:
-            return await query.message.reply_text(
-                "⚠️ Выберите хотя бы одну тренировку."
+    elif data == 'download_apple':
+        selected = [t for t in trainings if t.selected]
+        await query.message.reply_text(f'Создаю {len(selected)} .ics файла...')
+        for t in selected:
+            ics = t.to_ics().encode('utf-8')
+            bio = BytesIO(ics); bio.name = f"{t.workout_type['name'].lower()}_{DAY_MAPPING[t.day_name]['name'].lower()}.ics"
+            await query.message.reply_document(bio)
+        return await query.message.reply_text('✅ Готово!')
+    elif data == 'download_google':
+        selected = [t for t in trainings if t.selected]
+        for t in selected:
+            start = t.date.strftime('%Y%m%dT%H%M%SZ')
+            end_dt = t.date + timedelta(hours=1, minutes=30)
+            end = end_dt.strftime('%Y%m%dT%H%M%SZ')
+            text = urllib.parse.quote(f"{t.workout_type['emoji']} {t.description}")
+            details = urllib.parse.quote(t.waze_link or '')
+            loc = urllib.parse.quote(t.location)
+            url = (
+                f"https://www.google.com/calendar/render?action=TEMPLATE"
+                f"&text={text}" f"&dates={start}/{end}"  f"&details={details}" f"&location={loc}"
             )
-        await query.message.reply_text(f"Создаю {len(chosen)} .ics файлов…")
-        for t in chosen:
-            ics_bytes = t.to_ics().encode("utf-8")
-            bio = BytesIO(ics_bytes)
-            bio.name = (
-                f"{t.workout_type['name'].lower()}_"
-                f"{DAY_MAPPING[t.day_name]['name'].lower()}.ics"
-            )
-
-            # Russian month formatting
-            date_str = t.date.strftime("%d %B")
-            for en, ru in {
-                "January": "января",
-                "February": "февраля",
-                "March": "марта",
-                "April": "апреля",
-                "May": "мая",
-                "June": "июня",
-                "July": "июля",
-                "August": "августа",
-                "September": "сентября",
-                "October": "октября",
-                "November": "ноября",
-                "December": "декабря",
-            }.items():
-                date_str = date_str.replace(en, ru)
-
-            caption = (
-                f"{t.workout_type['emoji']} *{t.workout_type['name_ru']}*\n"
-                f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {date_str}\n"
-                f"⏰ {t.time}\n"
-                f"📍 {t.location}"
-            )
-            await query.message.reply_document(bio, caption=caption, parse_mode="Markdown")
-
-        return await query.message.reply_text(
-            "✅ Готово! Открой .ics файлы, чтобы добавить в календарь."
-        )
-
-    # Rebuild the keyboard after any toggle
+            await query.message.reply_text(url)
+        return
+    # rebuild keyboard after toggles
     kb = []
-    for idx, t in enumerate(trainings):
-        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date = t.date.strftime("%d.%m")
-        mark = "✅" if t.selected else "⬜"
+    for i, t in enumerate(trainings):
+        day_ru = DAY_MAPPING[t.day_name]['name_ru']
+        date = t.date.strftime('%d.%m')
+        mark = '✅' if t.selected else '⬜'
         kb.append([
             InlineKeyboardButton(
                 f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}",
-                callback_data=f"toggle_{idx}"
+                callback_data=f"toggle_{i}"
             )
         ])
     kb.append([
-        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
-        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
+        InlineKeyboardButton('✅ Выбрать всё', callback_data='select_all'),
+        InlineKeyboardButton('❌ Убрать всё', callback_data='deselect_all'),
     ])
-    kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
-
+    kb.append([InlineKeyboardButton('📥 Скачать', callback_data='choose_calendar')])
     await query.edit_message_text(
         f"Нашёл *{len(trainings)}* тренировок. Выбрано: {sum(t.selected for t in trainings)}",
         reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown",
+        parse_mode='Markdown'
     )
-
 
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("example", example_command))
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('example', example_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
-
     app.run_polling()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
