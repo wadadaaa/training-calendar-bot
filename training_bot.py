@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Bot configuration
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
 # Workout type mappings
 WORKOUT_TYPES = {
     'бег': {'emoji': '🏃', 'name': 'Running', 'name_ru': 'Бег'},
@@ -119,8 +120,8 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
         
-        # Look for lines with workout emojis
-        if any(emoji in line for emoji in ['🏃', '🏊', '🚴', '🛟']):
+        # Look for lines with workout emojis (including emoji combinations)
+        if any(emoji in line for emoji in ['🏃', '🏊', '🚴', '🛟']) or ('🏃' in line and '🏊' in line):
             # Extract day
             day_match = None
             for day in DAY_MAPPING.keys():
@@ -140,10 +141,15 @@ def parse_training_message(text: str) -> List[Training]:
             
             # Determine workout type
             workout_type = {'emoji': '🏃', 'name': 'Training', 'name_ru': 'Тренировка'}
-            for key, value in WORKOUT_TYPES.items():
-                if key in line.lower():
-                    workout_type = value
-                    break
+            
+            # Check for combined training (running + swimming)
+            if '🏃' in line and '🏊' in line:
+                workout_type = {'emoji': '🏃🏊', 'name': 'Run+Swim', 'name_ru': 'Бег+Плавание'}
+            else:
+                for key, value in WORKOUT_TYPES.items():
+                    if key in line.lower():
+                        workout_type = value
+                        break
             
             # Extract location (after time)
             after_time = line[line.find(time) + len(time):]
@@ -178,22 +184,22 @@ def parse_training_message(text: str) -> List[Training]:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     welcome_message = """
-🏃‍♂️ *Training Calendar Bot* 🏊‍♀️
+🏃‍♂️ *Календарь тренировок* 🏊‍♀️
 
-Welcome! I'll help you convert your WhatsApp training schedules into calendar events.
+Привет! Я помогу перенести расписание тренировок из WhatsApp в твой календарь.
 
-*How to use:*
-1. Copy your training schedule from WhatsApp
-2. Send it to me as a message
-3. Select which trainings to add
-4. Get .ics files for your calendar
+*Как использовать:*
+1. Скопируй расписание тренировок из WhatsApp
+2. Отправь его мне сообщением
+3. Выбери нужные тренировки
+4. Получи файлы для календаря
 
-*Commands:*
-/start - Show this message
-/help - Get help
-/example - See an example
+*Команды:*
+/start - Показать это сообщение
+/help - Помощь
+/example - Пример формата
 
-Just paste your training schedule to get started! 🚴‍♂️
+Просто отправь мне расписание тренировок! 🚴‍♂️
 """
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
@@ -201,27 +207,28 @@ Just paste your training schedule to get started! 🚴‍♂️
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
     help_text = """
-*How to use this bot:*
+*Как пользоваться ботом:*
 
-1. *Copy* your entire training message from WhatsApp
-2. *Paste* and send it to me
-3. I'll show you all the trainings I found
-4. *Select* which ones you want (use buttons)
-5. *Download* the .ics files
-6. *Open* them on your device to add to calendar
+1. *Скопируй* всё сообщение с тренировками из WhatsApp
+2. *Вставь* и отправь его мне
+3. Я покажу все найденные тренировки
+4. *Выбери* нужные (используй кнопки)
+5. *Скачай* файлы .ics
+6. *Открой* их на устройстве для добавления в календарь
 
-*Tips:*
-• The bot recognizes Russian text
-• It finds days, times, and locations
-• Waze links are included in events
-• Each event is 1.5 hours by default
+*Советы:*
+• Бот понимает русский текст
+• Находит дни, время и локации
+• Ссылки Waze включаются в события
+• Длительность по умолчанию 1.5 часа
 
-*Supported workout types:*
-🏃 Running (бег)
-🏊 Swimming (плавание)  
-🚴 Cycling (вело)
+*Поддерживаемые типы тренировок:*
+🏃 Бег
+🏊 Плавание  
+🚴 Велосипед
+🏃🏊 Бег + Плавание
 
-Questions? Contact @your_username
+Вопросы? Напиши @your_username
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -229,7 +236,7 @@ Questions? Contact @your_username
 async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show an example of the expected format"""
     example_text = """
-*Example training schedule:*
+*Пример расписания тренировок:*
 
 ```
 Групповые тренировки на новую неделе:
@@ -240,7 +247,7 @@ async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 🏃 Вторник, интервальный бег, 19:30, парк Яркон.
 ```
 
-Just copy and send me a message like this!
+Просто скопируй и отправь мне такое сообщение!
 """
     await update.message.reply_text(example_text, parse_mode='Markdown')
 
@@ -254,12 +261,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if not trainings:
         await update.message.reply_text(
-            "❌ I couldn't find any trainings in your message.\n\n"
-            "Make sure it includes:\n"
-            "• Day names (in Russian)\n"
-            "• Times (like 19:30)\n"
-            "• Workout emojis (🏃🏊🚴)\n\n"
-            "Send /example to see the correct format."
+            "❌ Не нашёл тренировки в твоём сообщении.\n\n"
+            "Убедись, что есть:\n"
+            "• Дни недели (на русском)\n"
+            "• Время (например 19:30)\n\n"
+            "Отправь /example чтобы увидеть правильный формат."
         )
         return
     
@@ -279,15 +285,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # Add action buttons
     keyboard.append([
-        InlineKeyboardButton("✅ Select All", callback_data="select_all"),
-        InlineKeyboardButton("❌ Deselect All", callback_data="deselect_all")
+        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
+        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all")
     ])
-    keyboard.append([InlineKeyboardButton("📥 Download Selected", callback_data="download")])
+    keyboard.append([InlineKeyboardButton("📥 Скачать выбранные", callback_data="download")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     selected_count = sum(1 for t in trainings if t.selected)
-    message_text = f"Found *{len(trainings)} trainings*! ({selected_count} selected)\n\nTap to select/deselect:"
+    message_text = f"Нашёл *{len(trainings)} тренировок*! (выбрано: {selected_count})\n\nНажми для выбора:"
     
     await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -299,7 +305,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     trainings = context.user_data.get('trainings', [])
     if not trainings:
-        await query.edit_message_text("❌ Session expired. Please send your training schedule again.")
+        await query.edit_message_text("❌ Сессия истекла. Пожалуйста, отправь расписание снова.")
         return
     
     data = query.data
@@ -322,10 +328,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Generate and send ICS files
         selected_trainings = [t for t in trainings if t.selected]
         if not selected_trainings:
-            await query.message.reply_text("⚠️ Please select at least one training!")
+            await query.message.reply_text("⚠️ Выбери хотя бы одну тренировку!")
             return
         
-        await query.message.reply_text(f"📥 Generating {len(selected_trainings)} calendar files...")
+        await query.message.reply_text(f"📥 Создаю {len(selected_trainings)} файлов для календаря...")
         
         for training in selected_trainings:
             # Generate ICS content
@@ -340,8 +346,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             file_bytes = BytesIO(ics_content.encode('utf-8'))
             file_bytes.name = filename
             
+            date_str = training.date.strftime('%d %B')
+            # Format month names in Russian
+            months_ru = {
+                'January': 'января', 'February': 'февраля', 'March': 'марта',
+                'April': 'апреля', 'May': 'мая', 'June': 'июня',
+                'July': 'июля', 'August': 'августа', 'September': 'сентября',
+                'October': 'октября', 'November': 'ноября', 'December': 'декабря'
+            }
+            for en, ru in months_ru.items():
+                date_str = date_str.replace(en, ru)
+            
             caption = (f"{training.workout_type['emoji']} *{training.workout_type['name_ru']}*\n"
-                      f"📅 {training.date.strftime('%A, %B %d')}\n"
+                      f"📅 {day_info.get('name_ru', 'День')}, {date_str}\n"
                       f"⏰ {training.time}\n"
                       f"📍 {training.location}")
             
@@ -352,8 +369,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
         
         await query.message.reply_text(
-            "✅ *Done!* Open these files on your device to add to calendar.\n\n"
-            "_Tip: On iPhone, tap the file and select 'Add to Calendar'_",
+            "✅ *Готово!* Открой эти файлы на устройстве для добавления в календарь.\n\n"
+            "_Совет: На iPhone нажми на файл и выбери 'Добавить в Календарь'_",
             parse_mode='Markdown'
         )
         return
@@ -369,15 +386,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{i}")])
     
     keyboard.append([
-        InlineKeyboardButton("✅ Select All", callback_data="select_all"),
-        InlineKeyboardButton("❌ Deselect All", callback_data="deselect_all")
+        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
+        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all")
     ])
-    keyboard.append([InlineKeyboardButton("📥 Download Selected", callback_data="download")])
+    keyboard.append([InlineKeyboardButton("📥 Скачать выбранные", callback_data="download")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     selected_count = sum(1 for t in trainings if t.selected)
-    message_text = f"Found *{len(trainings)} trainings*! ({selected_count} selected)\n\nTap to select/deselect:"
+    message_text = f"Нашёл *{len(trainings)} тренировок*! (выбрано: {selected_count})\n\nНажми для выбора:"
     
     await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
