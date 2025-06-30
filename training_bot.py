@@ -71,7 +71,6 @@ class Training:
         return today + timedelta(days=days_ahead)
 
     def to_ics(self) -> str:
-        # Build .ics content as list of lines
         start_dt = self.date.replace(
             hour=int(self.time.split(":")[0]),
             minute=int(self.time.split(":")[1]),
@@ -83,8 +82,7 @@ class Training:
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         uid = f"training-{start_str}-{self.workout_type['name']}@bot"
         desc = f"Waze: {self.waze_link}" if self.waze_link else ""
-
-        ics_lines = [
+        lines = [
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
             "PRODID:-//Training Calendar Bot//EN",
@@ -99,34 +97,27 @@ class Training:
             "END:VEVENT",
             "END:VCALENDAR",
         ]
-        return "\n".join(ics_lines)
+        return "\n".join(lines)
 
 
 def parse_training_message(text: str) -> List[Training]:
     trainings: List[Training] = []
     lines = text.splitlines()
-
     for i, raw in enumerate(lines):
         line = raw.strip()
         if not line:
             continue
-
-        # 1) Find day of week
         day = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day:
             continue
-
-        # 2) Find time (current or next line)
         tm = re.search(r"(\d{1,2}:\d{2})", line)
         if not tm and i + 1 < len(lines):
-            tm = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
+            tm = re.search(r"(\d{1,2}:\d{2})", lines[i+1])
             if tm:
                 line = f"{line} {lines[i+1].strip()}"
         if not tm:
             continue
         time = tm.group(1)
-
-        # 3) Determine workout type
         low = line.lower()
         if (("плаван" in low or "море" in low) and "бег" in low) or ("🏃" in line and "🏊" in line):
             workout = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
@@ -136,14 +127,10 @@ def parse_training_message(text: str) -> List[Training]:
             workout = WORKOUT_TYPES["вело"]
         else:
             workout = WORKOUT_TYPES["бег"]
-
-        # 4) Extract location
-        after = line[line.find(time) + len(time):]
-        loc_part = after.split(".", 1)[0]
+        after = line[line.find(time)+len(time):]
+        loc_part = after.split(".",1)[0]
         m_loc = re.search(r",\s*(.+)$", loc_part)
         location = m_loc.group(1).strip() if m_loc else "Training location"
-
-        # 5) Extract description
         before = line[:line.find(time)]
         desc = re.sub(
             r"|".join(map(re.escape, DAY_MAPPING)) + r"|[🏃🏊🚴🛟]+",
@@ -152,8 +139,62 @@ def parse_training_message(text: str) -> List[Training]:
             flags=re.IGNORECASE,
         ).strip(" ,:-")
         description = desc or workout["name_ru"]
-
-        # 6) Optional Waze link
         waze = ""
         if i + 1 < len(lines):
-            m_w = re.search(r"https?://waze\.com/[^
+            m_w = re.search(r"https?://waze\.com/[^\s]+", lines[i+1])
+            if m_w:
+                waze = m_w.group(0)
+        trainings.append(Training(day, time, workout, description, location, waze))
+    return trainings
+
+
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n"
+        "Чтобы начать, скопируйте расписание из WhatsApp и отправьте его в сообщении.\n"
+        "Я сам разберу дни, время и локации и предложу скачать .ics файл для вашего календаря.\n\n"
+        "Для примера формата отправьте /example."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def example_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "*Пример формата:*\n"
+        "🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n"
+        "Точка сбора https://waze.com/ul/...\n"
+        "🚴 Суббота, вело, 06:00, Рамла."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text or ""
+    if text.strip().lower() in ("start", "старт"):
+        return await start_cmd(update, context)
+    trainings = parse_training_message(text)
+    if not trainings:
+        return await update.message.reply_text(
+            "❌ Не нашёл тренировок. Попробуйте /example."
+        )
+    # далее логика выбора и скачивания
+
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    # тут handle toggle, select_all, download
+    # ...
+
+
+def main() -> None:
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("example", example_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
