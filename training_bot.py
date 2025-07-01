@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta
 from io import BytesIO
 from typing import List
+from urllib.parse import quote
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -97,6 +98,35 @@ class Training:
             "END:VCALENDAR",
         ]
         return "\n".join(lines)
+
+    def to_google_calendar_url(self) -> str:
+        """Создает ссылку для добавления в Google Calendar"""
+        start = self.date.replace(
+            hour=int(self.time.split(":")[0]),
+            minute=int(self.time.split(":")[1]),
+            second=0,
+        )
+        end = start + timedelta(hours=1, minutes=30)
+        
+        # Форматирование для Google Calendar (UTC)
+        fmt = lambda d: d.strftime("%Y%m%dT%H%M%S")
+        
+        title = f"{self.workout_type['emoji']} {self.description}"
+        details = f"📍 Место: {self.location}"
+        if self.waze_link:
+            details += f"\n🗺️ Навигация: {self.waze_link}"
+        
+        # URL encoding
+        params = {
+            'action': 'TEMPLATE',
+            'text': title,
+            'dates': f"{fmt(start)}/{fmt(end)}",
+            'details': details,
+            'location': self.location
+        }
+        
+        url_params = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
+        return f"https://calendar.google.com/calendar/render?{url_params}"
 
 
 # ——— Парсер текста —————————————————————————————————————————————————————
@@ -213,7 +243,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
         InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
     ])
-    kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
+    kb.append([
+        InlineKeyboardButton("📥 Скачать .ics", callback_data="download"),
+        InlineKeyboardButton("📅 Google Calendar", callback_data="google_calendar"),
+    ])
 
     await update.message.reply_text(
         f"Нашёл *{len(sessions)}* тренировок! Выберите:",
@@ -276,6 +309,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         return await query.message.reply_text("✅ Готово!")
 
+    elif cmd == "google_calendar":
+        chosen = [t for t in trainings if t.selected]
+        if not chosen:
+            return await query.message.reply_text("⚠️ Выберите хотя бы одну тренировку!")
+
+        await query.message.reply_text(f"📅 Создаю ссылки для {len(chosen)} тренировок…")
+        for t in chosen:
+            # русская дата
+            ds = t.date.strftime("%d %B")
+            ru_m = {
+                "January":"января","February":"февраля","March":"марта",
+                "April":"апреля","May":"мая","June":"июня","July":"июля",
+                "August":"августа","September":"сентября",
+                "October":"октября","November":"ноября","December":"декабря"
+            }
+            for en, ru in ru_m.items():
+                ds = ds.replace(en, ru)
+
+            google_url = t.to_google_calendar_url()
+            
+            cap = (
+                f"{t.workout_type['emoji']} *{t.workout_type['name_ru']}*\n"
+                f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {ds}\n"
+                f"⏰ {t.time}\n"
+                f"📍 {t.location}\n\n"
+                f"[➕ Добавить в Google Calendar]({google_url})"
+            )
+            await query.message.reply_text(cap, parse_mode="Markdown", disable_web_page_preview=True)
+
+        return await query.message.reply_text("✅ Ссылки готовы! Нажмите на любую, чтобы добавить в календарь.")
+
     # пересобираем клавиатуру после toggle/select change
     kb = []
     for idx, t in enumerate(trainings):
@@ -289,7 +353,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
         InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
     ])
-    kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
+    kb.append([
+        InlineKeyboardButton("📥 Скачать .ics", callback_data="download"),
+        InlineKeyboardButton("📅 Google Calendar", callback_data="google_calendar"),
+    ])
 
     await query.edit_message_text(
         f"Нашёл *{len(trainings)}* тренировок! Выберите:",
