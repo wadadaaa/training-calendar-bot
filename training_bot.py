@@ -16,7 +16,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Enable logging
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -63,9 +63,9 @@ class Training:
 
     def _calculate_date(self) -> datetime:
         today = datetime.now()
-        wd = today.weekday()  # Monday=0 ... Sunday=6
+        wd = today.weekday()  # 0=Mon ... 6=Sun
         info = DAY_MAPPING[self.day_name]
-        # Convert Telegram Sunday=0 to Python Sunday=6
+        # Telegram uses num=0 for Sunday → convert to Python 6
         target = 6 if info["num"] == 0 else info["num"] - 1
         delta = (target - wd) % 7 or 7
         return today + timedelta(days=delta)
@@ -107,12 +107,12 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
 
-        # 1) Find day
+        # 1) День недели
         day_match = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day_match:
             continue
 
-        # 2) Find time in this or next line
+        # 2) Время в этой или следующей строке
         tm = re.search(r"(\d{1,2}:\d{2})", line)
         if not tm and i + 1 < len(lines):
             tm2 = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
@@ -123,7 +123,7 @@ def parse_training_message(text: str) -> List[Training]:
             continue
         time = tm.group(1)
 
-        # 3) Determine workout_type (note the name)
+        # 3) Тип тренировки
         low = line.lower()
         if (("плаван" in low or "море" in low) and "бег" in low) or (
             "🏃" in line and "🏊" in line
@@ -136,13 +136,13 @@ def parse_training_message(text: str) -> List[Training]:
         else:
             workout_type = WORKOUT_TYPES["бег"]
 
-        # 4) Extract location
+        # 4) Локация
         after = line[line.find(time) + len(time) :]
         loc_part = after.split(".", 1)[0]
         m_loc = re.search(r",\s*(.+)$", loc_part)
         location = m_loc.group(1).strip() if m_loc else "Training location"
 
-        # 5) Extract description
+        # 5) Описание
         before = line[: line.find(time)]
         desc = re.sub(
             r"|".join(map(re.escape, DAY_MAPPING)) + r"|[🏃🏊🚴🛟]+",
@@ -152,7 +152,7 @@ def parse_training_message(text: str) -> List[Training]:
         ).strip(" ,:-")
         description = desc or workout_type["name_ru"]
 
-        # 6) Optional Waze link
+        # 6) Waze-ссылка
         waze_link = ""
         if i + 1 < len(lines):
             m_w = re.search(r"https?://waze\.com/[^\s]+", lines[i + 1])
@@ -183,7 +183,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-async def example_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def example(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "*Пример формата:*\n"
         "🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n"
@@ -198,30 +198,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if text.strip().lower() in ("start", "старт"):
         return await start(update, context)
 
-    sessions = parse_training_message(text)
-    if not sessions:
+    trainings = parse_training_message(text)
+    if not trainings:
         return await update.message.reply_text(
             "❌ Не нашёл тренировок. Попробуйте /example."
         )
 
-    context.user_data["trainings"] = sessions
-
-    # … build your inline keyboard for selection & download as before …
+    context.user_data["trainings"] = trainings
+    # … строим клавиатуру выбора и скачивания …
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.callback_query.answer()
-    # … handle toggle/select_all/download …
+    # … обработка toggle/select_all/download …
 
 
 async def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
-
-    # remove any webhook + drop pending updates
+    # Удаляем вебхук, чтобы не было конфликта getUpdates
     await app.bot.delete_webhook(drop_pending_updates=True)
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("example", example_command))
+    app.add_handler(CommandHandler("example", example))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
