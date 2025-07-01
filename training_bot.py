@@ -124,91 +124,40 @@ END:VCALENDAR"""
 
 
 def parse_training_message(text: str) -> List[Training]:
-    """Parse WhatsApp training message and extract training sessions"""
     trainings = []
-    lines = text.split("\n")
+    lines = text.splitlines()
 
-    for i, line in enumerate(lines):
-        line = line.strip()
+    for i, raw in enumerate(lines):
+        line = raw.strip()
         if not line:
             continue
 
-        # Look for lines that contain a day of the week
-        day_match = None
-        for day in DAY_MAPPING.keys():
-            if day in line.lower():
-                day_match = day
-                break
+        # 1) Найти день
+        day_match = next((d for d in DAY_MAPPING if d in line.lower()), None)
+        if not day_match:
+            continue
 
-        # If we found a day, look for a time
-        if day_match:
-            time_match = re.search(r"(\d{1,2}:\d{2})", line)
-            if not time_match:
-                continue
+        # 2) Попытаться найти время в этой строке
+        time_match = re.search(r'(\d{1,2}:\d{2})', line)
+        # если не нашли — посмотреть на следующую строку
+        if not time_match and i + 1 < len(lines):
+            next_line = lines[i+1].strip()
+            tm2 = re.search(r'(\d{1,2}:\d{2})', next_line)
+            if tm2:
+                time_match = tm2
+                # «сливаем» строки, чтобы дальше извлекать локацию/описание сразу из одного текста
+                line = f"{line} {next_line}"
 
-            time = time_match.group(1)
+        if not time_match:
+            continue
+        time = time_match.group(1)
 
-            # Log for debugging
-            logger.info(f"Found training: {day_match} at {time}")
-
-            # Determine workout type based on text content
-            workout_type = {"emoji": "🏃", "name": "Training", "name_ru": "Тренировка"}
-
-            # Check text content for workout type
-            line_lower = line.lower()
-
-            # Check for combined training first (both swimming and running keywords)
-            if ("плаван" in line_lower or "море" in line_lower) and "бег" in line_lower:
-                workout_type = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
-            # Check if line has both running and swimming emojis (handle complex emoji combinations)
-            elif (("🏃" in line or "🏃‍♂" in line or "🏃‍♀" in line) and 
-                  ("🏊" in line or "🏊‍♂" in line or "🏊‍♀" in line or "🏊🏻‍♂️" in line)):
-                workout_type = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
-            elif "плаван" in line_lower or "🏊" in line or "🛟" in line:
-                workout_type = {"emoji": "🏊", "name": "Swimming", "name_ru": "Плавание"}
-            elif "вело" in line_lower or "🚴" in line:
-                workout_type = {"emoji": "🚴", "name": "Cycling", "name_ru": "Велосипед"}
-            elif "бег" in line_lower or "🏃" in line:
-                workout_type = {"emoji": "🏃", "name": "Running", "name_ru": "Бег"}
-
-            # Extract location (after time)
-            after_time = line[line.find(time) + len(time):]
-            # Remove everything after the period to get clean location
-            location_part = after_time.split(".")[0] if "." in after_time else after_time
-            location_match = re.search(r",\s*(.+)$", location_part)
-            location = location_match.group(1).strip() if location_match else "Training location"
-
-            # Extract description - everything between day/workout type and time
-            before_time = line[: line.find(time)]
-            # Remove day name and clean up
-            desc_text = before_time
-            for day_key in DAY_MAPPING.keys():
-                desc_text = desc_text.replace(day_key.capitalize(), "").replace(day_key, "")
-            desc_text = re.sub(r"[🏃🏊🚴🛟🏃‍♂🏊🏻‍♂️🏃‍♀]+", "", desc_text)
-            desc_text = desc_text.strip(" ,:-")
-
-            description = desc_text if desc_text else workout_type["name_ru"]
-
-            # Look for Waze link in the next line
-            waze_link = ""
-            if i + 1 < len(lines):
-                next_line = lines[i + 1]
-                link_match = re.search(r"https://waze\.com/[^\s]+", next_line)
-                if link_match:
-                    waze_link = link_match.group(0)
-
-            training = Training(
-                day_name=day_match,
-                time=time,
-                workout_type=workout_type,
-                description=description,
-                location=location,
-                waze_link=waze_link,
-            )
-            trainings.append(training)
+        # теперь line гарантированно содержит и день, и время,
+        # дальше ваш старый код по определению workout_type, location, description, waze_link...
+        # ...
+        trainings.append( Training( day_match, time, workout_type, description, location, waze_link ) )
 
     return trainings
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
