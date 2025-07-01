@@ -203,7 +203,7 @@ def parse_training_message(text: str) -> List[Training]:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n"
-        "Скопируйте расписание из WhatsApp и отправьте мне — я верну .ics файлы.\n"
+        "Скопируйте расписание из WhatsApp и отправьте мне — я верну файлы для календаря.\n"
         "Пример формата: /example",
         parse_mode="Markdown",
     )
