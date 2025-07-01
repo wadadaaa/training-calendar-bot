@@ -43,7 +43,7 @@ DAY_MAPPING = {
 }
 
 
-# ——— Training model ——————————————————————————————————————————————————
+# ——— Trainig model ——————————————————————————————————————————————————
 class Training:
     def __init__(
         self,
@@ -129,123 +129,65 @@ class Training:
         return f"https://calendar.google.com/calendar/render?{url_params}"
 
 
-# ——— Improved Text parser —————————————————————————————————————————————————————
+# ——— Text parser —————————————————————————————————————————————————————
 def parse_training_message(text: str) -> List[Training]:
     trainings: List[Training] = []
     lines = text.splitlines()
 
-    for i, raw_line in enumerate(lines):
-        # 1) Более агрессивная очистка эмоджи в начале строки
+    for i, raw in enumerate(lines):
         line = re.sub(
-            r'^[\u{1F000}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]+\s*',
+            r'^(?:[\U0001F300-\U0001FAFF\u2600-\u27BF]+\uFE0F?)+\s*',
             "",
-            raw_line,
-            flags=re.UNICODE
+            raw,
         ).strip()
-        
         if not line:
             continue
 
-        # 2) Поиск дня недели (более гибкий)
-        day = None
-        for day_key in DAY_MAPPING.keys():
-            if day_key in line.lower():
-                day = day_key
-                break
-        
+        day = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day:
             continue
 
-        # 3) Поиск времени в текущей или следующей строке
-        time_match = re.search(r"(\d{1,2}:\d{2})", line)
-        time = None
-        combined_line = line
-        
-        if time_match:
-            time = time_match.group(1)
-        elif i + 1 < len(lines):
-            next_line = lines[i + 1]
-            time_match_next = re.search(r"(\d{1,2}:\d{2})", next_line)
-            if time_match_next:
-                time = time_match_next.group(1)
-                # Объединяем строки для правильного парсинга локации
-                combined_line = f"{line} {next_line.strip()}"
-        
-        if not time:
+        tm = re.search(r"(\d{1,2}:\d{2})", line)
+        if not tm and i + 1 < len(lines):
+            tm2 = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
+            if tm2:
+                tm = tm2
+                line = f"{line} {lines[i + 1].strip()}"
+        if not tm:
             continue
+        time = tm.group(1)
 
-        # 4) Определение типа тренировки (улучшенная логика)
-        line_lower = combined_line.lower()
-        raw_lower = raw_line.lower()
-        
-        # Проверяем комбинированные тренировки
-        if (("плаван" in line_lower or "море" in line_lower) and "бег" in line_lower) or \
-           ("🏃" in raw_line and ("🏊" in raw_line or "🛟" in raw_line)):
-            workout_type = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
-        elif "плаван" in line_lower or "🏊" in raw_line or "🛟" in raw_line:
-            workout_type = WORKOUT_TYPES["плавание"]
-        elif "вело" in line_lower or "🚴" in raw_line:
-            workout_type = WORKOUT_TYPES["вело"]
+        low = line.lower()
+        if (("плаван" in low or "море" in low) and "бег" in low) or ("🏃" in raw and "🏊" in raw):
+            wt = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
+        elif "плаван" in low or "🏊" in line:
+            wt = WORKOUT_TYPES["плавание"]
+        elif "вело" in low or "🚴" in line:
+            wt = WORKOUT_TYPES["вело"]
         else:
-            workout_type = WORKOUT_TYPES["бег"]
+            wt = WORKOUT_TYPES["бег"]
 
-        # 5) Извлечение локации (улучшенная логика)
-        location = "Training location"
-        
-        # Разделяем по времени
-        parts_after_time = combined_line.split(time, 1)
-        if len(parts_after_time) > 1:
-            after_time = parts_after_time[1].strip()
-            
-            # Убираем начальную запятую и ищем локацию
-            after_time = after_time.lstrip(", ")
-            
-            # Ищем текст до точки или до конца строки
-            location_match = re.match(r"([^.]+)", after_time)
-            if location_match:
-                location_text = location_match.group(1).strip()
-                # Убираем лишние символы в начале
-                location_text = re.sub(r"^[,\s]+", "", location_text)
-                if location_text and not location_text.startswith("*"):
-                    location = location_text
+        after = line.split(time, 1)[1]
+        loc = after.split(".", 1)[0]
+        m_loc = re.search(r",\s*(.+)$", loc)
+        location = m_loc.group(1).strip() if m_loc else "Training location"
 
-        # 6) Извлечение описания (улучшенная логика)
-        before_time = combined_line.split(time, 1)[0]
-        
-        # Убираем день недели
-        desc_text = before_time
-        for day_key in DAY_MAPPING.keys():
-            desc_text = re.sub(day_key, "", desc_text, flags=re.IGNORECASE)
-        
-        # Убираем эмоджи и лишние символы
-        desc_text = re.sub(r"[🏃🏊🚴🛟‍♀‍♂️]+", "", desc_text)
-        desc_text = re.sub(r"^[,\s:-]+|[,\s:-]+$", "", desc_text)
-        
-        # Убираем "Начало тренировки" если есть
-        desc_text = re.sub(r"начало тренировки", "", desc_text, flags=re.IGNORECASE)
-        desc_text = re.sub(r"^[,\s:-]+|[,\s:-]+$", "", desc_text)
-        
-        description = desc_text.strip() if desc_text.strip() else workout_type["name_ru"]
+        before = line.split(time, 1)[0]
+        desc = re.sub(
+            r"|".join(map(re.escape, DAY_MAPPING.keys())) + r"|[🏃🏊🚴🛟]+",
+            "",
+            before,
+            flags=re.IGNORECASE,
+        ).strip(" ,:-")
+        description = desc or wt["name_ru"]
 
-        # 7) Поиск Waze ссылки в следующих строках
-        waze_link = ""
-        # Ищем в следующих 3 строках
-        for j in range(i + 1, min(i + 4, len(lines))):
-            waze_match = re.search(r"https?://waze\.com/\S+", lines[j])
-            if waze_match:
-                waze_link = waze_match.group(0)
-                break
-            # Также ищем Google Maps ссылки
-            google_match = re.search(r"https?://maps\.app\.goo\.gl/\S+", lines[j])
-            if google_match:
-                waze_link = google_match.group(0)
-                break
+        wlink = ""
+        if i + 1 < len(lines):
+            m = re.search(r"https?://waze\.com/\S+", lines[i + 1])
+            if m:
+                wlink = m.group(0)
 
-        # 8) Создаем объект тренировки
-        training = Training(day, time, workout_type, description, location, waze_link)
-        trainings.append(training)
-        
-        logger.info(f"Найдена тренировка: {day} {time} - {description} в {location}")
+        trainings.append(Training(day, time, wt, description, location, wlink))
 
     return trainings
 
@@ -255,7 +197,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n"
         "Скопируйте расписание из WhatsApp и отправьте мне — я верну файлы для календаря.\n"
-        "Поддерживаю: 📥 .ics файлы, 📅 Google Calendar, 🏆 TrainingPeaks\n\n"
         "Пример формата: /example",
         parse_mode="Markdown",
     )
@@ -266,8 +207,7 @@ async def example(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*Пример:*\n"
         "🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n"
         "Точка сбора https://waze.com/ul/...\n"
-        "🚴 Суббота, вело, 06:00, Рамла.\n"
-        "🏃🏊 Пятница, бег + плавание, 6:00, пляж.",
+        "🚴 Суббота, вело, 06:00, Рамла.",
         parse_mode="Markdown",
     )
 
@@ -279,11 +219,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     sessions = parse_training_message(text)
     if not sessions:
-        return await update.message.reply_text(
-            "❌ Не нашёл тренировок в сообщении.\n\n"
-            "Попробуйте формат: /example\n"
-            "Или проверьте, что указаны день недели и время."
-        )
+        return await update.message.reply_text("❌ Не нашёл тренировок. Попробуйте /example.")
 
     context.user_data["trainings"] = sessions
 
@@ -305,7 +241,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     ])
 
     await update.message.reply_text(
-        f"Нашёл *{len(sessions)}* тренировок! Выберите нужные:",
+        f"Нашёл *{len(sessions)}* тренировок! Выберите:",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown",
     )
@@ -396,7 +332,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         return await query.message.reply_text("✅ Ссылки готовы! Нажмите на любую, чтобы добавить в календарь.")
 
-    # Обновляем клавиатуру
     kb = []
     for idx, t in enumerate(trainings):
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
@@ -415,7 +350,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     ])
 
     await query.edit_message_text(
-        f"Нашёл *{len(trainings)}* тренировок! Выберите нужные:",
+        f"Нашёл *{len(trainings)}* тренировок! Выберите:",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown",
     )
@@ -430,7 +365,6 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    logger.info("🚀 Training Calendar Bot запущен!")
     app.run_polling(drop_pending_updates=True)
 
 
