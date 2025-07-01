@@ -1,7 +1,6 @@
 import os
 import re
 import logging
-import asyncio
 from datetime import datetime, timedelta
 from io import BytesIO
 from typing import List
@@ -16,14 +15,14 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ——— Logging —————————————————————————————————————————————————————————————————————
+# ——— Логирование —————————————————————————————————————————————————————
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ——— Config —————————————————————————————————————————————————————————————————————
+# ——— Конфиг ————————————————————————————————————————————————————————
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 WORKOUT_TYPES = {
@@ -43,7 +42,7 @@ DAY_MAPPING = {
 }
 
 
-# ——— Data model ————————————————————————————————————————————————————————————————————
+# ——— Модель тренировки ——————————————————————————————————————————————————
 class Training:
     def __init__(
         self,
@@ -61,25 +60,26 @@ class Training:
         self.location = location
         self.waze_link = waze_link
         self.selected = True
-        self.date = self._calculate_date()
+        self.date = self._calc_date()
 
-    def _calculate_date(self) -> datetime:
+    def _calc_date(self) -> datetime:
         today = datetime.now()
-        wd = today.weekday()  # Mon=0 … Sun=6
+        wd = today.weekday()  # 0=Mon … 6=Sun
         info = DAY_MAPPING[self.day_name]
+        # Telegram: num=0→Sunday, Python uses 6
         target = 6 if info["num"] == 0 else info["num"] - 1
         delta = (target - wd) % 7 or 7
         return today + timedelta(days=delta)
 
     def to_ics(self) -> str:
-        start_dt = self.date.replace(
+        start = self.date.replace(
             hour=int(self.time.split(":")[0]),
             minute=int(self.time.split(":")[1]),
             second=0,
         )
-        end_dt = start_dt + timedelta(hours=1, minutes=30)
+        end = start + timedelta(hours=1, minutes=30)
         fmt = lambda d: d.strftime("%Y%m%dT%H%M%S")
-        uid = f"training-{fmt(start_dt)}-{self.workout_type['name']}@bot"
+        uid = f"training-{fmt(start)}-{self.workout_type['name']}@bot"
         desc = f"Waze: {self.waze_link}" if self.waze_link else ""
         lines = [
             "BEGIN:VCALENDAR",
@@ -88,8 +88,8 @@ class Training:
             "BEGIN:VEVENT",
             f"UID:{uid}",
             f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
-            f"DTSTART:{fmt(start_dt)}",
-            f"DTEND:{fmt(end_dt)}",
+            f"DTSTART:{fmt(start)}",
+            f"DTEND:{fmt(end)}",
             f"SUMMARY:{self.workout_type['emoji']} {self.description}",
             f"LOCATION:{self.location}",
             f"DESCRIPTION:{desc}",
@@ -99,13 +99,13 @@ class Training:
         return "\n".join(lines)
 
 
-# ——— Parsing logic ————————————————————————————————————————————————————————————————
+# ——— Парсер текста —————————————————————————————————————————————————————
 def parse_training_message(text: str) -> List[Training]:
     trainings: List[Training] = []
     lines = text.splitlines()
 
     for i, raw in enumerate(lines):
-        # Strip ANY emoji sequence at start (including ZWJ/VS‐16 combos)
+        # 1) Обрезаем любые эмоджи в начале (Zwj, VS16 и т.д.)
         line = re.sub(
             r'^(?:[\U0001F300-\U0001FAFF\u2600-\u27BF]+\uFE0F?)+\s*',
             "",
@@ -114,12 +114,12 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
 
-        # Day
+        # 2) День недели
         day = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day:
             continue
 
-        # Time (this or next line)
+        # 3) Время в этой или следующей строке
         tm = re.search(r"(\d{1,2}:\d{2})", line)
         if not tm and i + 1 < len(lines):
             tm2 = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
@@ -130,24 +130,24 @@ def parse_training_message(text: str) -> List[Training]:
             continue
         time = tm.group(1)
 
-        # Workout type
+        # 4) Тип тренировки
         low = line.lower()
         if (("плаван" in low or "море" in low) and "бег" in low) or ("🏃" in raw and "🏊" in raw):
-            workout_type = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
+            wt = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
         elif "плаван" in low or "🏊" in line:
-            workout_type = WORKOUT_TYPES["плавание"]
+            wt = WORKOUT_TYPES["плавание"]
         elif "вело" in low or "🚴" in line:
-            workout_type = WORKOUT_TYPES["вело"]
+            wt = WORKOUT_TYPES["вело"]
         else:
-            workout_type = WORKOUT_TYPES["бег"]
+            wt = WORKOUT_TYPES["бег"]
 
-        # Location (after time, before first dot)
+        # 5) Локация (после времени до точки)
         after = line.split(time, 1)[1]
-        loc_part = after.split(".", 1)[0]
-        m_loc = re.search(r",\s*(.+)$", loc_part)
+        loc = after.split(".", 1)[0]
+        m_loc = re.search(r",\s*(.+)$", loc)
         location = m_loc.group(1).strip() if m_loc else "Training location"
 
-        # Description (before time, strip day & emoji)
+        # 6) Описание (до времени, без дня и эмоджи)
         before = line.split(time, 1)[0]
         desc = re.sub(
             r"|".join(map(re.escape, DAY_MAPPING.keys())) + r"|[🏃🏊🚴🛟]+",
@@ -155,27 +155,25 @@ def parse_training_message(text: str) -> List[Training]:
             before,
             flags=re.IGNORECASE,
         ).strip(" ,:-")
-        description = desc or workout_type["name_ru"]
+        description = desc or wt["name_ru"]
 
-        # Waze link on next line
-        waze_link = ""
+        # 7) Waze на следующей строке
+        wlink = ""
         if i + 1 < len(lines):
             m = re.search(r"https?://waze\.com/\S+", lines[i + 1])
             if m:
-                waze_link = m.group(0)
+                wlink = m.group(0)
 
-        trainings.append(
-            Training(day, time, workout_type, description, location, waze_link)
-        )
+        trainings.append(Training(day, time, wt, description, location, wlink))
 
     return trainings
 
 
-# ——— Telegram handlers —————————————————————————————————————————————————————————————
+# ——— Handlers —————————————————————————————————————————————————————————————
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🏃‍♂️ *Календарь тренировок* 🏊‍♀️\n\n"
-        "Скопируйте расписание из WhatsApp и отправьте мне, я верну .ics файлы.\n\n"
+        "Скопируйте расписание из WhatsApp и отправьте мне — я верну .ics файлы.\n"
         "Пример формата: /example",
         parse_mode="Markdown",
     )
@@ -183,7 +181,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def example(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "*Пример формата:*\n"
+        "*Пример:*\n"
         "🏃 Воскресенье, бег: техника, 19:30, Бат-Ям.\n"
         "Точка сбора https://waze.com/ul/...\n"
         "🚴 Суббота, вело, 06:00, Рамла.",
@@ -196,19 +194,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if text.strip().lower() in ("start", "старт"):
         return await start(update, context)
 
-    trainings = parse_training_message(text)
-    if not trainings:
+    sessions = parse_training_message(text)
+    if not sessions:
         return await update.message.reply_text("❌ Не нашёл тренировок. Попробуйте /example.")
 
-    context.user_data["trainings"] = trainings
+    context.user_data["trainings"] = sessions
 
-    # Build inline keyboard
+    # inline-клавиатура
     kb = []
-    for idx, t in enumerate(trainings):
+    for idx, t in enumerate(sessions):
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date_str = t.date.strftime("%d.%m")
+        date = t.date.strftime("%d.%m")
         mark = "✅" if t.selected else "⬜"
-        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date_str} — {t.time}"
+        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}"
         kb.append([InlineKeyboardButton(btn, callback_data=f"toggle_{idx}")])
 
     kb.append([
@@ -218,7 +216,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     kb.append([InlineKeyboardButton("📥 Скачать", callback_data="download")])
 
     await update.message.reply_text(
-        f"Нашёл *{len(trainings)}* тренировок! Выберите:",
+        f"Нашёл *{len(sessions)}* тренировок! Выберите:",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="Markdown",
     )
@@ -227,15 +225,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+
     trainings: List[Training] = context.user_data.get("trainings", [])
     if not trainings:
-        return await query.edit_message_text("❌ Сессия истекла. Пришлите расписание снова.")
+        return await query.edit_message_text("❌ Сессия устарела. Пришлите расписание снова.")
 
     cmd = query.data
 
     if cmd.startswith("toggle_"):
-        idx = int(cmd.split("_", 1)[1])
-        trainings[idx].selected = not trainings[idx].selected
+        i = int(cmd.split("_", 1)[1])
+        trainings[i].selected = not trainings[i].selected
 
     elif cmd == "select_all":
         for t in trainings:
@@ -250,40 +249,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not chosen:
             return await query.message.reply_text("⚠️ Выберите хотя бы одну тренировку!")
 
-        await query.message.reply_text(f"📥 Создаю {len(chosen)} .ics…")
+        await query.message.reply_text(f"📥 Создаю {len(chosen)} .ics файла…")
         for t in chosen:
-            ics = t.to_ics().encode("utf-8")
-            bio = BytesIO(ics)
+            data = t.to_ics().encode("utf-8")
+            bio = BytesIO(data)
             bio.name = f"{t.workout_type['name'].lower()}_{t.day_name}.ics"
 
-            # Russian date in caption
-            date_str = t.date.strftime("%d %B")
-            ru_months = {
+            # русская дата
+            ds = t.date.strftime("%d %B")
+            ru_m = {
                 "January":"января","February":"февраля","March":"марта",
                 "April":"апреля","May":"мая","June":"июня","July":"июля",
                 "August":"августа","September":"сентября",
                 "October":"октября","November":"ноября","December":"декабря"
             }
-            for en, ru in ru_months.items():
-                date_str = date_str.replace(en, ru)
+            for en, ru in ru_m.items():
+                ds = ds.replace(en, ru)
 
-            caption = (
+            cap = (
                 f"{t.workout_type['emoji']} *{t.workout_type['name_ru']}*\n"
-                f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {date_str}\n"
+                f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {ds}\n"
                 f"⏰ {t.time}\n"
                 f"📍 {t.location}"
             )
-            await query.message.reply_document(bio, caption=caption, parse_mode="Markdown")
+            await query.message.reply_document(bio, caption=cap, parse_mode="Markdown")
 
-        return await query.message.reply_text("✅ *Готово!*")
+        return await query.message.reply_text("✅ Готово!")
 
-    # rebuild keyboard after any toggle/select change
+    # пересобираем клавиатуру после toggle/select change
     kb = []
     for idx, t in enumerate(trainings):
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date_str = t.date.strftime("%d.%m")
+        date = t.date.strftime("%d.%m")
         mark = "✅" if t.selected else "⬜"
-        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date_str} — {t.time}"
+        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}"
         kb.append([InlineKeyboardButton(btn, callback_data=f"toggle_{idx}")])
 
     kb.append([
@@ -299,17 +298,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+# ——— Entry point ——————————————————————————————————————————————————————————————
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
-    # убираем вебхук, чтобы не конфликтовал с polling
-    asyncio.run(app.bot.delete_webhook(drop_pending_updates=True))
+
+    # удаляем старый вебхук, чтобы не было конфликтов
+    app.run_polling(drop_pending_updates=True)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("example", example))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
-
-    app.run_polling()
 
 
 if __name__ == "__main__":
