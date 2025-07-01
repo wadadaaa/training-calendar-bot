@@ -16,14 +16,14 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ——— Логирование —————————————————————————————————————————————————————
+# ——— Logging —————————————————————————————————————————————————————
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ——— Конфиг ————————————————————————————————————————————————————————
+# ——— Config ————————————————————————————————————————————————————————
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 WORKOUT_TYPES = {
@@ -43,7 +43,7 @@ DAY_MAPPING = {
 }
 
 
-# ——— Модель тренировки ——————————————————————————————————————————————————
+# ——— Trainig model ——————————————————————————————————————————————————
 class Training:
     def __init__(
         self,
@@ -129,13 +129,12 @@ class Training:
         return f"https://calendar.google.com/calendar/render?{url_params}"
 
 
-# ——— Парсер текста —————————————————————————————————————————————————————
+# ——— Text parser —————————————————————————————————————————————————————
 def parse_training_message(text: str) -> List[Training]:
     trainings: List[Training] = []
     lines = text.splitlines()
 
     for i, raw in enumerate(lines):
-        # 1) Обрезаем любые эмоджи в начале (Zwj, VS16 и т.д.)
         line = re.sub(
             r'^(?:[\U0001F300-\U0001FAFF\u2600-\u27BF]+\uFE0F?)+\s*',
             "",
@@ -144,12 +143,10 @@ def parse_training_message(text: str) -> List[Training]:
         if not line:
             continue
 
-        # 2) День недели
         day = next((d for d in DAY_MAPPING if d in line.lower()), None)
         if not day:
             continue
 
-        # 3) Время в этой или следующей строке
         tm = re.search(r"(\d{1,2}:\d{2})", line)
         if not tm and i + 1 < len(lines):
             tm2 = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
@@ -160,7 +157,6 @@ def parse_training_message(text: str) -> List[Training]:
             continue
         time = tm.group(1)
 
-        # 4) Тип тренировки
         low = line.lower()
         if (("плаван" in low or "море" in low) and "бег" in low) or ("🏃" in raw and "🏊" in raw):
             wt = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
@@ -171,13 +167,11 @@ def parse_training_message(text: str) -> List[Training]:
         else:
             wt = WORKOUT_TYPES["бег"]
 
-        # 5) Локация (после времени до точки)
         after = line.split(time, 1)[1]
         loc = after.split(".", 1)[0]
         m_loc = re.search(r",\s*(.+)$", loc)
         location = m_loc.group(1).strip() if m_loc else "Training location"
 
-        # 6) Описание (до времени, без дня и эмоджи)
         before = line.split(time, 1)[0]
         desc = re.sub(
             r"|".join(map(re.escape, DAY_MAPPING.keys())) + r"|[🏃🏊🚴🛟]+",
@@ -187,7 +181,6 @@ def parse_training_message(text: str) -> List[Training]:
         ).strip(" ,:-")
         description = desc or wt["name_ru"]
 
-        # 7) Waze на следующей строке
         wlink = ""
         if i + 1 < len(lines):
             m = re.search(r"https?://waze\.com/\S+", lines[i + 1])
@@ -230,7 +223,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     context.user_data["trainings"] = sessions
 
-    # inline-клавиатура
     kb = []
     for idx, t in enumerate(sessions):
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
@@ -340,7 +332,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         return await query.message.reply_text("✅ Ссылки готовы! Нажмите на любую, чтобы добавить в календарь.")
 
-    # пересобираем клавиатуру после toggle/select change
     kb = []
     for idx, t in enumerate(trainings):
         day_ru = DAY_MAPPING[t.day_name]["name_ru"]
@@ -369,13 +360,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ИСПРАВЛЕНО: Сначала добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("example", example))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # Затем запускаем polling
     app.run_polling(drop_pending_updates=True)
 
 
