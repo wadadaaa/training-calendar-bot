@@ -302,13 +302,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # удаляем старый вебхук, чтобы не было конфликтов
-    app.run_polling(drop_pending_updates=True)
-
+    # ИСПРАВЛЕНО: Сначала добавляем обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("example", example))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
+
+    # Затем запускаем polling
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
