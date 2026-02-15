@@ -1,7 +1,6 @@
 import os
 import re
 import sys
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -472,12 +471,11 @@ async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
     err = context.error
     if isinstance(err, Conflict):
         if not context.application.bot_data.get("conflict_reported"):
-            logger.error(
-                "Telegram Conflict: another bot instance is using this token. "
-                "Stop other instances/deployments and run only one polling bot."
+            logger.warning(
+                "Telegram Conflict: another bot instance is currently polling with this token. "
+                "Waiting and retrying (common during rolling deployments)."
             )
             context.application.bot_data["conflict_reported"] = True
-        context.application.stop_running()
         return
 
     logger.error("Unhandled exception in update handler", exc_info=err)
@@ -585,11 +583,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 # ——— Entry point ——————————————————————————————————————————————————————————————
 def main() -> None:
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
     apply_telegram_py314_compat_patch()
     app = Application.builder().token(BOT_TOKEN).build()
 
