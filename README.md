@@ -139,6 +139,9 @@ pip install -r requirements-dev.txt
 # Run tests
 pytest
 
+# Or run all tests with one command
+make test
+
 # Format code
 black .
 isort .

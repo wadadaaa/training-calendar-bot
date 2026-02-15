@@ -1,12 +1,16 @@
 import os
 import re
+import sys
+import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import List
+from typing import List, Optional, Tuple
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,6 +34,7 @@ WORKOUT_TYPES = {
     "бег":      {"emoji": "🏃",   "name": "Running",  "name_ru": "Бег"},
     "плавание": {"emoji": "🏊",   "name": "Swimming", "name_ru": "Плавание"},
     "вело":     {"emoji": "🚴",   "name": "Cycling",  "name_ru": "Велосипед"},
+    "силовые":  {"emoji": "🏋️",  "name": "Strength", "name_ru": "Силовые"},
 }
 
 DAY_MAPPING = {
@@ -42,8 +47,34 @@ DAY_MAPPING = {
     "воскресенье": {"num": 0, "name_ru": "Воскресенье"},
 }
 
+RU_MONTHS = {
+    "January": "января",
+    "February": "февраля",
+    "March": "марта",
+    "April": "апреля",
+    "May": "мая",
+    "June": "июня",
+    "July": "июля",
+    "August": "августа",
+    "September": "сентября",
+    "October": "октября",
+    "November": "ноября",
+    "December": "декабря",
+}
+
+TIME_RE = re.compile(r"(\d{1,2}:\d{2})")
+URL_RE = re.compile(r"https?://\S+", flags=re.IGNORECASE)
+MORE_WORD_RE = re.compile(r"\bморе\b", flags=re.IGNORECASE)
+LEADING_NOISE_RE = re.compile(r"^[^0-9A-Za-zА-Яа-яЁё]+")
+
+APP_TIMEZONE = ZoneInfo("Asia/Jerusalem")
+
 
 # ——— Trainig model ——————————————————————————————————————————————————
+def now_local() -> datetime:
+    return datetime.now(APP_TIMEZONE)
+
+
 class Training:
     def __init__(
         self,
@@ -64,33 +95,73 @@ class Training:
         self.date = self._calc_date()
 
     def _calc_date(self) -> datetime:
-        today = datetime.now()
-        wd = today.weekday()  # 0=Mon … 6=Sun
+        now = now_local()
+        wd = now.weekday()  # 0=Mon … 6=Sun
         info = DAY_MAPPING[self.day_name]
         # Telegram: num=0→Sunday, Python uses 6
         target = 6 if info["num"] == 0 else info["num"] - 1
-        delta = (target - wd) % 7 or 7
-        return today + timedelta(days=delta)
+        delta = (target - wd) % 7
+        candidate = now + timedelta(days=delta)
+
+        # If the training is for "today" but its time already passed, move to next week.
+        try:
+            hour, minute = map(int, self.time.split(":"))
+            candidate_at_time = candidate.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+            if candidate_at_time < now:
+                candidate += timedelta(days=7)
+        except (ValueError, IndexError):
+            pass
+
+        return candidate
+
+    def _event_window(self) -> Tuple[datetime, datetime]:
+        hour, minute = map(int, self.time.split(":"))
+        start = self.date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        end = start + timedelta(hours=1, minutes=30)
+        return start, end
+
+    @staticmethod
+    def _fmt(dt: datetime) -> str:
+        return dt.strftime("%Y%m%dT%H%M%S")
+
+    def _google_calendar_url(self, start: datetime, end: datetime) -> str:
+        title = f"{self.workout_type['emoji']} {self.description}"
+        details = f"📍 Место: {self.location}"
+        if self.waze_link:
+            details += f"\n🗺️ Навигация: {self.waze_link}"
+
+        params = {
+            "action": "TEMPLATE",
+            "text": title,
+            "dates": f"{self._fmt(start)}/{self._fmt(end)}",
+            "details": details,
+            "location": self.location,
+            "ctz": "Asia/Jerusalem",
+        }
+
+        url_params = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
+        return f"https://calendar.google.com/calendar/render?{url_params}"
+
+    def to_google_calendar_url(self) -> str:
+        start, end = self._event_window()
+        return self._google_calendar_url(start, end)
 
     def to_ics(self) -> str:
-        start = self.date.replace(
-            hour=int(self.time.split(":")[0]),
-            minute=int(self.time.split(":")[1]),
-            second=0,
-        )
-        end = start + timedelta(hours=1, minutes=30)
-        fmt = lambda d: d.strftime("%Y%m%dT%H%M%S")
-        uid = f"training-{fmt(start)}-{self.workout_type['name']}@bot"
-        desc = f"Waze: {self.waze_link}" if self.waze_link else ""
+        start, end = self._event_window()
+        desc = f"Navigation: {self.waze_link}" if self.waze_link else ""
+        dtstamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         lines = [
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
             "PRODID:-//Training Calendar Bot//EN",
+            "CALSCALE:GREGORIAN",
             "BEGIN:VEVENT",
-            f"UID:{uid}",
-            f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
-            f"DTSTART:{fmt(start)}",
-            f"DTEND:{fmt(end)}",
+            f"UID:training-{self._fmt(start)}-{self.workout_type['name']}@bot",
+            f"DTSTAMP:{dtstamp}",
+            f"DTSTART:{self._fmt(start)}",
+            f"DTEND:{self._fmt(end)}",
             f"SUMMARY:{self.workout_type['emoji']} {self.description}",
             f"LOCATION:{self.location}",
             f"DESCRIPTION:{desc}",
@@ -99,97 +170,317 @@ class Training:
         ]
         return "\n".join(lines)
 
-    def to_google_calendar_url(self) -> str:
-        """Создает ссылку для добавления в Google Calendar"""
-        start = self.date.replace(
-            hour=int(self.time.split(":")[0]),
-            minute=int(self.time.split(":")[1]),
-            second=0,
-        )
-        end = start + timedelta(hours=1, minutes=30)
-        
-        # Форматирование для Google Calendar (UTC)
-        fmt = lambda d: d.strftime("%Y%m%dT%H%M%S")
-        
-        title = f"{self.workout_type['emoji']} {self.description}"
-        details = f"📍 Место: {self.location}"
-        if self.waze_link:
-            details += f"\n🗺️ Навигация: {self.waze_link}"
-        
-        # URL encoding
-        params = {
-            'action': 'TEMPLATE',
-            'text': title,
-            'dates': f"{fmt(start)}/{fmt(end)}",
-            'details': details,
-            'location': self.location
-        }
-        
-        url_params = "&".join([f"{k}={quote(str(v))}" for k, v in params.items()])
-        return f"https://calendar.google.com/calendar/render?{url_params}"
-
 
 # ——— Text parser —————————————————————————————————————————————————————
-def parse_training_message(text: str) -> List[Training]:
-    trainings: List[Training] = []
-    lines = text.splitlines()
+def format_date_ru(date: datetime) -> str:
+    ds = date.strftime("%d %B")
+    for en, ru in RU_MONTHS.items():
+        ds = ds.replace(en, ru)
+    return ds
 
-    for i, raw in enumerate(lines):
-        line = re.sub(
-            r'^(?:[\U0001F300-\U0001FAFF\u2600-\u27BF]+\uFE0F?)+\s*',
-            "",
-            raw,
-        ).strip()
+
+def workout_type_for_text(raw_text: str, normalized_text: str) -> dict:
+    has_run = "бег" in normalized_text or "🏃" in raw_text
+    has_swim = (
+        "плаван" in normalized_text
+        or bool(MORE_WORD_RE.search(normalized_text))
+        or "🏊" in raw_text
+        or "🛟" in raw_text
+    )
+
+    if has_run and has_swim:
+        return {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
+    if has_swim:
+        return WORKOUT_TYPES["плавание"]
+    if "вело" in normalized_text or "🚴" in raw_text:
+        return WORKOUT_TYPES["вело"]
+    if "силов" in normalized_text or "🏋" in raw_text:
+        return WORKOUT_TYPES["силовые"]
+    return WORKOUT_TYPES["бег"]
+
+
+def preview_place(location: str) -> str:
+    if not location or location == "Training location":
+        return "Место уточняется"
+
+    low = location.lower().replace("ё", "е")
+    city_map = {
+        "бат-ям": "Бат-Ям",
+        "бат ям": "Бат-Ям",
+        "нетания": "Нетания",
+        "рамат-ган": "Рамат-Ган",
+        "рамат ган": "Рамат-Ган",
+        "модиин": "Модиин",
+        "ришен ле цион": "Ришен ле Цион",
+        "нешер": "Нешер",
+        "рамла": "Рамла",
+        "аэропорт сити": "Аэропорт Сити",
+    }
+    for token, city in city_map.items():
+        if token in low:
+            return city
+
+    ignore_tokens = (
+        "парк",
+        "стадион",
+        "парковк",
+        "площадь",
+        "кафе",
+        "центр",
+        "каньон",
+        "кантри",
+        "спортзал",
+        "возле",
+    )
+    parts = [part.strip(" .") for part in location.split(",") if part.strip()]
+    for part in reversed(parts):
+        part_low = part.lower()
+        if any(token in part_low for token in ignore_tokens):
+            continue
+        if any(ch.isdigit() for ch in part):
+            continue
+        return part
+
+    return parts[-1] if parts else location
+
+
+def shorten_preview(text: str, max_len: int = 18) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def build_selection_text(trainings: List[Training]) -> str:
+    return f"Нашёл *{len(trainings)}* тренировок! Выберите:"
+
+
+def build_training_keyboard(trainings: List[Training]) -> InlineKeyboardMarkup:
+    kb = []
+    for idx, t in enumerate(trainings):
+        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
+        date = t.date.strftime("%d.%m")
+        mark = "✅" if t.selected else "⬜"
+        place = shorten_preview(preview_place(t.location))
+        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time} · {place}"
+        kb.append([InlineKeyboardButton(btn, callback_data=f"toggle_{idx}")])
+
+    kb.append(
+        [
+            InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
+            InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
+        ]
+    )
+    kb.append(
+        [
+            InlineKeyboardButton("📥 Скачать .ics", callback_data="download"),
+            InlineKeyboardButton("📅 Google Calendar", callback_data="google_calendar"),
+        ]
+    )
+    return InlineKeyboardMarkup(kb)
+
+
+def training_caption(t: Training, google_url: Optional[str] = None) -> str:
+    cap = (
+        f"{t.workout_type['emoji']} *{t.workout_type['name_ru']}*\n"
+        f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {format_date_ru(t.date)}\n"
+        f"⏰ {t.time}\n"
+        f"📍 {t.location}"
+    )
+    if google_url:
+        cap += f"\n\n[➕ Добавить в Google Calendar]({google_url})"
+    return cap
+
+
+def strip_leading_noise(line: str) -> str:
+    return LEADING_NOISE_RE.sub("", line).strip()
+
+
+def extract_day_name(line: str) -> Optional[str]:
+    cleaned = strip_leading_noise(line).lower()
+    for day in DAY_MAPPING:
+        if cleaned.startswith(day):
+            return day
+    return None
+
+
+def split_training_blocks(text: str) -> List[List[str]]:
+    blocks: List[List[str]] = []
+    current: List[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
 
-        day = next((d for d in DAY_MAPPING if d in line.lower()), None)
+        if extract_day_name(line):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+
+    if current:
+        blocks.append(current)
+
+    return blocks
+
+
+def extract_time(block: List[str]) -> str:
+    for line in block:
+        m = TIME_RE.search(line)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def extract_header_core(header_line: str, day_name: str, time: str) -> str:
+    cleaned = strip_leading_noise(header_line)
+    low = cleaned.lower()
+
+    if low.startswith(day_name):
+        core = cleaned[len(day_name):]
+    else:
+        idx = low.find(day_name)
+        core = cleaned[idx + len(day_name):] if idx >= 0 else cleaned
+
+    core = core.replace(time, "", 1)
+    core = re.sub(r"(,\s*){2,}", ", ", core)
+    return core.strip(" ,:-—–.")
+
+
+def split_description_and_inline_location(header_core: str) -> Tuple[str, str]:
+    text = header_core.strip(" .")
+    if not text:
+        return "", ""
+
+    if ":" in text:
+        return text, ""
+
+    if "," in text:
+        desc, rest = text.split(",", 1)
+        return desc.strip(" ."), rest.strip(" .")
+
+    return text, ""
+
+
+def extract_navigation_link(block: List[str]) -> str:
+    for line in block:
+        m = URL_RE.search(line)
+        if m:
+            return m.group(0).rstrip(").,")
+    return ""
+
+
+def extract_location(block: List[str], inline_location: str) -> str:
+    if inline_location:
+        return inline_location
+
+    for line in block:
+        candidate = line.strip(" .")
+        if not candidate:
+            continue
+
+        low = candidate.lower()
+        if URL_RE.search(candidate):
+            continue
+        if candidate.startswith("*"):
+            continue
+        if "точка сбора" in low or "место встречи" in low:
+            continue
+        if "тренировка состоится" in low:
+            continue
+        if "данные о тренировке" in low:
+            continue
+
+        return candidate
+
+    return "Training location"
+
+
+def parse_training_message(text: str) -> List[Training]:
+    trainings: List[Training] = []
+    for block in split_training_blocks(text):
+        header = block[0]
+        day = extract_day_name(header)
         if not day:
             continue
 
-        tm = re.search(r"(\d{1,2}:\d{2})", line)
-        if not tm and i + 1 < len(lines):
-            tm2 = re.search(r"(\d{1,2}:\d{2})", lines[i + 1])
-            if tm2:
-                tm = tm2
-                line = f"{line} {lines[i + 1].strip()}"
-        if not tm:
+        time = extract_time(block)
+        if not time:
             continue
-        time = tm.group(1)
 
-        low = line.lower()
-        if (("плаван" in low or "море" in low) and "бег" in low) or ("🏃" in raw and "🏊" in raw):
-            wt = {"emoji": "🏃🏊", "name": "Run+Swim", "name_ru": "Бег+Плавание"}
-        elif "плаван" in low or "🏊" in line:
-            wt = WORKOUT_TYPES["плавание"]
-        elif "вело" in low or "🚴" in line:
-            wt = WORKOUT_TYPES["вело"]
-        else:
-            wt = WORKOUT_TYPES["бег"]
+        block_text = " ".join(block)
+        wt = workout_type_for_text(block_text, block_text.lower())
 
-        after = line.split(time, 1)[1]
-        loc = after.split(".", 1)[0]
-        m_loc = re.search(r",\s*(.+)$", loc)
-        location = m_loc.group(1).strip() if m_loc else "Training location"
+        header_core = extract_header_core(header, day, time)
+        description, inline_location = split_description_and_inline_location(header_core)
+        location = extract_location(block[1:], inline_location)
+        link = extract_navigation_link(block)
 
-        before = line.split(time, 1)[0]
-        desc = re.sub(
-            r"|".join(map(re.escape, DAY_MAPPING.keys())) + r"|[🏃🏊🚴🛟]+",
-            "",
-            before,
-            flags=re.IGNORECASE,
-        ).strip(" ,:-")
-        description = desc or wt["name_ru"]
-
-        wlink = ""
-        if i + 1 < len(lines):
-            m = re.search(r"https?://waze\.com/\S+", lines[i + 1])
-            if m:
-                wlink = m.group(0)
-
-        trainings.append(Training(day, time, wt, description, location, wlink))
+        trainings.append(
+            Training(
+                day,
+                time,
+                wt,
+                description or wt["name_ru"],
+                location,
+                link,
+            )
+        )
 
     return trainings
+
+
+def parse_callback_int(value: str) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_telegram_py314_compat_patch() -> None:
+    """
+    python-telegram-bot 20.7 misses a private slot used by Updater.__init__.
+    Python 3.14 enforces this and raises AttributeError during app build.
+    """
+    if sys.version_info < (3, 14):
+        return
+
+    try:
+        import telegram
+        from telegram.ext import _applicationbuilder, _updater
+    except Exception:
+        return
+
+    if getattr(telegram, "__version__", "") != "20.7":
+        return
+
+    if "_Updater__polling_cleanup_cb" in _updater.Updater.__slots__:
+        return
+
+    class _UpdaterPy314Compat(_updater.Updater):
+        __slots__ = ("_Updater__polling_cleanup_cb",)
+
+    _updater.Updater = _UpdaterPy314Compat
+    _applicationbuilder.Updater = _UpdaterPy314Compat
+    logger.warning(
+        "Applied python-telegram-bot 20.7 compatibility patch for Python 3.14."
+    )
+
+
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    err = context.error
+    if isinstance(err, Conflict):
+        if not context.application.bot_data.get("conflict_reported"):
+            logger.error(
+                "Telegram Conflict: another bot instance is using this token. "
+                "Stop other instances/deployments and run only one polling bot."
+            )
+            context.application.bot_data["conflict_reported"] = True
+        context.application.stop_running()
+        return
+
+    logger.error("Unhandled exception in update handler", exc_info=err)
 
 
 # ——— Handlers —————————————————————————————————————————————————————————————
@@ -223,26 +514,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     context.user_data["trainings"] = sessions
 
-    kb = []
-    for idx, t in enumerate(sessions):
-        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date = t.date.strftime("%d.%m")
-        mark = "✅" if t.selected else "⬜"
-        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}"
-        kb.append([InlineKeyboardButton(btn, callback_data=f"toggle_{idx}")])
-
-    kb.append([
-        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
-        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
-    ])
-    kb.append([
-        InlineKeyboardButton("📥 Скачать .ics", callback_data="download"),
-        InlineKeyboardButton("📅 Google Calendar", callback_data="google_calendar"),
-    ])
-
     await update.message.reply_text(
-        f"Нашёл *{len(sessions)}* тренировок! Выберите:",
-        reply_markup=InlineKeyboardMarkup(kb),
+        build_selection_text(sessions),
+        reply_markup=build_training_keyboard(sessions),
         parse_mode="Markdown",
     )
 
@@ -258,16 +532,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     cmd = query.data
 
     if cmd.startswith("toggle_"):
-        i = int(cmd.split("_", 1)[1])
+        i = parse_callback_int(cmd.split("_", 1)[1])
+        if i is None or not (0 <= i < len(trainings)):
+            return await query.message.reply_text("❌ Не удалось изменить выбор. Обновите список.")
         trainings[i].selected = not trainings[i].selected
 
-    elif cmd == "select_all":
+    elif cmd in ("select_all", "deselect_all"):
+        selected = cmd == "select_all"
         for t in trainings:
-            t.selected = True
-
-    elif cmd == "deselect_all":
-        for t in trainings:
-            t.selected = False
+            t.selected = selected
 
     elif cmd == "download":
         chosen = [t for t in trainings if t.selected]
@@ -279,25 +552,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             data = t.to_ics().encode("utf-8")
             bio = BytesIO(data)
             bio.name = f"{t.workout_type['name'].lower()}_{t.day_name}.ics"
-
-            # русская дата
-            ds = t.date.strftime("%d %B")
-            ru_m = {
-                "January":"января","February":"февраля","March":"марта",
-                "April":"апреля","May":"мая","June":"июня","July":"июля",
-                "August":"августа","September":"сентября",
-                "October":"октября","November":"ноября","December":"декабря"
-            }
-            for en, ru in ru_m.items():
-                ds = ds.replace(en, ru)
-
-            cap = (
-                f"{t.workout_type['emoji']} *{t.workout_type['name_ru']}*\n"
-                f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {ds}\n"
-                f"⏰ {t.time}\n"
-                f"📍 {t.location}"
+            await query.message.reply_document(
+                bio,
+                caption=training_caption(t),
+                parse_mode="Markdown",
             )
-            await query.message.reply_document(bio, caption=cap, parse_mode="Markdown")
 
         return await query.message.reply_text("✅ Готово!")
 
@@ -308,62 +567,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         await query.message.reply_text(f"📅 Создаю ссылки для {len(chosen)} тренировок…")
         for t in chosen:
-            # русская дата
-            ds = t.date.strftime("%d %B")
-            ru_m = {
-                "January":"января","February":"февраля","March":"марта",
-                "April":"апреля","May":"мая","June":"июня","July":"июля",
-                "August":"августа","September":"сентября",
-                "October":"октября","November":"ноября","December":"декабря"
-            }
-            for en, ru in ru_m.items():
-                ds = ds.replace(en, ru)
-
             google_url = t.to_google_calendar_url()
-            
-            cap = (
-                f"{t.workout_type['emoji']} *{t.workout_type['name_ru']}*\n"
-                f"📅 {DAY_MAPPING[t.day_name]['name_ru']}, {ds}\n"
-                f"⏰ {t.time}\n"
-                f"📍 {t.location}\n\n"
-                f"[➕ Добавить в Google Calendar]({google_url})"
+            await query.message.reply_text(
+                training_caption(t, google_url),
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
             )
-            await query.message.reply_text(cap, parse_mode="Markdown", disable_web_page_preview=True)
 
         return await query.message.reply_text("✅ Ссылки готовы! Нажмите на любую, чтобы добавить в календарь.")
 
-    kb = []
-    for idx, t in enumerate(trainings):
-        day_ru = DAY_MAPPING[t.day_name]["name_ru"]
-        date = t.date.strftime("%d.%m")
-        mark = "✅" if t.selected else "⬜"
-        btn = f"{mark} {t.workout_type['emoji']} {day_ru} {date} — {t.time}"
-        kb.append([InlineKeyboardButton(btn, callback_data=f"toggle_{idx}")])
-
-    kb.append([
-        InlineKeyboardButton("✅ Выбрать всё", callback_data="select_all"),
-        InlineKeyboardButton("❌ Убрать всё", callback_data="deselect_all"),
-    ])
-    kb.append([
-        InlineKeyboardButton("📥 Скачать .ics", callback_data="download"),
-        InlineKeyboardButton("📅 Google Calendar", callback_data="google_calendar"),
-    ])
-
     await query.edit_message_text(
-        f"Нашёл *{len(trainings)}* тренировок! Выберите:",
-        reply_markup=InlineKeyboardMarkup(kb),
+        build_selection_text(trainings),
+        reply_markup=build_training_keyboard(trainings),
         parse_mode="Markdown",
     )
 
 
 # ——— Entry point ——————————————————————————————————————————————————————————————
 def main() -> None:
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    apply_telegram_py314_compat_patch()
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("example", example))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_error_handler(handle_error)
 
     app.run_polling(drop_pending_updates=True)
 
