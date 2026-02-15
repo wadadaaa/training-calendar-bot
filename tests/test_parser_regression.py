@@ -70,6 +70,7 @@ def load_training_bot_module():
     sys.modules["telegram"] = telegram
     telegram_error = types.ModuleType("telegram.error")
     telegram_error.Conflict = type("Conflict", (Exception,), {})
+    telegram_error.InvalidToken = type("InvalidToken", (Exception,), {})
     sys.modules["telegram.error"] = telegram_error
 
     telegram_ext = types.ModuleType("telegram.ext")

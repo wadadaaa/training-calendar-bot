@@ -10,7 +10,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import Conflict
+from telegram.error import Conflict, InvalidToken
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -599,7 +599,13 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(handle_error)
 
-    app.run_polling(drop_pending_updates=True)
+    try:
+        app.run_polling(drop_pending_updates=True)
+    except InvalidToken:
+        logger.error(
+            "BOT_TOKEN отклонен Telegram API. Обновите переменную BOT_TOKEN в Railway Variables."
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
